@@ -50,7 +50,8 @@
 -type label_name() :: term().
 -type label_value() :: term().
 -type label() :: {label_name(), label_value()}.
--type labels() :: [label()].
+-type pre_rendered_labels() :: binary().
+-type labels() :: [label()] | pre_rendered_labels().
 -type value() :: float() | integer() | undefined | infinity.
 -type prometheus_boolean() :: boolean() | number() | list() | undefined.
 -type gauge() :: value() | {value()} | {labels(), value()}.
@@ -76,21 +77,23 @@
 %% If `Name' is a list, looks for atoms and converts them to binaries.
 %% Why iolists do not support atoms?
 %% @end
--spec metric_name(Name) -> iolist() when
+-spec metric_name(Name) -> binary() when
     Name :: atom() | binary() | list(char() | iolist() | binary() | atom()).
 metric_name(Name) ->
   case Name of
     _ when is_atom(Name) ->
       atom_to_binary(Name, utf8);
     _ when is_list(Name) ->
-      [
-       case is_atom(P) of
-         true -> atom_to_binary(P, utf8);
-         _ -> P
-       end
-       || P <- Name];
-    _ ->
-      Name
+          lists:foldl(fun
+                        (A, Acc) when is_atom(A) ->
+                          <<Acc/binary, (atom_to_binary(A, utf8))/binary>>;
+                        (C, Acc) when is_integer(C) ->
+                          <<Acc/binary, C:8>>;
+                        (Str, Acc) ->
+                          <<Acc/binary, (iolist_to_binary(Str))/binary>>
+                      end, <<>>, Name);
+    _ when is_binary(Name) ->
+          Name
   end.
 
 %% @doc
@@ -326,6 +329,18 @@ histogram_metric(Labels, Buckets, Count, Sum) ->
 %% @doc Equivalent to
 %% {@link label_pair/1. `lists:map(fun label_pair/1, Labels)'}.
 %% @end
+%%
+%% NB `is_binary' clause here is for a special optimization for text
+%% format only: client code can pre-generate final labels string,
+%% e.g. when it knows when character escaping is not needed. This
+%% avoids direct performance cost of character escaping, and also
+%% reduces garabage collection pressure, as intermediate lists of
+%% tuples/records are not created at all. This optimization is used by
+%% RabbitMQ prometheus plugin (which calls `create_mf/5', and it ends
+%% here).
+%% WARNING Works only for text format, protobuf format export will
+%% fail with an error.
+label_pairs(B) when is_binary(B) -> B;
 label_pairs(Labels) -> lists:map(fun label_pair/1, Labels).
 
 %% @doc
